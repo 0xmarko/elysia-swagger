@@ -16,10 +16,7 @@
     "default": "./dist/index.js"
   },
   "types": "./dist/index.d.ts",
-  "keywords": [
-    "elysia",
-    "swagger"
-  ],
+  "keywords": ["elysia", "swagger"],
   "homepage": "https://github.com/elysiajs/elysia-swagger",
   "repository": {
     "type": "git",
@@ -43,12 +40,12 @@
     "@types/lodash.clonedeep": "^4.5.7",
     "@types/node": "^20.1.4",
     "bun-types": "^0.7.0",
-    "elysia": "0.8.0",
     "eslint": "^8.40.0",
     "rimraf": "4.3",
     "typescript": "^5.0.4"
   },
   "dependencies": {
+    "@sinclair/typebox": "^0.32.9",
     "lodash.clonedeep": "^4.5.0",
     "openapi-types": "^12.1.3"
   }

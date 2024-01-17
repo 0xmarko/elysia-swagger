@@ -1,310 +1,269 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import type { HTTPMethod, LocalHook } from 'elysia'
+import type { HTTPMethod, LocalHook } from 'elysia';
 
-import { Kind, type TSchema } from '@sinclair/typebox'
-import type { OpenAPIV3 } from 'openapi-types'
+import { Kind, type TSchema } from '@sinclair/typebox';
+import type { OpenAPIV3 } from 'openapi-types';
 
-import deepClone from 'lodash.clonedeep'
+import deepClone from 'lodash.clonedeep';
 
 export const toOpenAPIPath = (path: string) =>
-    path
-        .split('/')
-        .map((x) => (x.startsWith(':') ? `{${x.slice(1, x.length)}}` : x))
-        .join('/')
+  path
+    .split('/')
+    .map((x) => (x.startsWith(':') ? `{${x.slice(1, x.length)}}` : x))
+    .join('/');
 
+/**
+ * Modified by @0xmarko.
+ * Correctly set parameter properties for more complex schemas that use 'anyOf'.
+ * Includes things like 't.Numeric()' or 't.Nullable(t.String())'.
+ *
+ * The fix places 'anyOf' into the 'schema' property, instead of placing
+ * it into the root parameter object and leaving 'schema' empty.
+ */
 export const mapProperties = (
-    name: string,
-    schema: TSchema | string | undefined,
-    models: Record<string, TSchema>
+  name: string,
+  inputSchema: TSchema | string | undefined,
+  models: Record<string, TSchema>,
 ) => {
-    if (schema === undefined) return []
+  if (!inputSchema) return [];
 
-    if (typeof schema === 'string')
-        if (schema in models) schema = models[schema]
-        else throw new Error(`Can't find model ${schema}`)
+  let schema: TSchema | undefined;
+  if (typeof inputSchema === 'string') {
+    if (!(inputSchema in models))
+      throw new Error(`Can't find model ${inputSchema}`);
+    schema = models[inputSchema];
+  } else {
+    schema = inputSchema;
+  }
 
-    return Object.entries(schema?.properties ?? []).map(([key, value]) => {
-        const { type: valueType = undefined, ...rest } = value as any;
-        return {
-            // @ts-ignore
-            ...rest,
-            schema: { type: valueType },
-            in: name,
-            name: key,
-            // @ts-ignore
-            required: schema!.required?.includes(key) ?? false,
-        };
-    });
-}
+  return Object.entries(schema.properties ?? []).map(([key, value]) => {
+    const { type, anyOf, ...rest } = value as any;
+    return {
+      ...rest,
+      schema: type ? { type } : { anyOf },
+      in: name,
+      name: key,
+      required: schema?.required?.includes(key) ?? false,
+    };
+  });
+};
 
-const mapTypesResponse = (
-    types: string[],
-    schema:
-        | string
-        | {
-              type: string
-              properties: Object
-              required: string[]
-          }
-) => {
-    if (typeof schema === 'object'
-        && ['void', 'undefined', 'null'].includes(schema.type)) return;
+const mapTypesResponse = (types: string[], schema: TSchema | string) => {
+  const responses: Record<string, OpenAPIV3.MediaTypeObject> = {};
 
-    const responses: Record<string, OpenAPIV3.MediaTypeObject> = {}
+  for (const type of types)
+    responses[type] = {
+      schema:
+        typeof schema === 'string'
+          ? {
+              $ref: `#/components/schemas/${schema}`,
+            }
+          : { ...(schema as any) },
+    };
 
-    for (const type of types)
-        responses[type] = {
-            schema:
-                typeof schema === 'string'
-                    ? {
-                          $ref: `#/components/schemas/${schema}`
-                      }
-                    : { ...(schema as any) }
-        }
-
-    return responses
-}
+  return responses;
+};
 
 export const capitalize = (word: string) =>
-    word.charAt(0).toUpperCase() + word.slice(1)
+  word.charAt(0).toUpperCase() + word.slice(1);
 
 export const generateOperationId = (method: string, paths: string) => {
-    let operationId = method.toLowerCase()
+  let operationId = method.toLowerCase();
 
-    if (paths === '/') return operationId + 'Index'
+  if (paths === '/') return `${operationId}Index`;
 
-    for (const path of paths.split('/')) {
-        if (path.charCodeAt(0) === 123) {
-            operationId += 'By' + capitalize(path.slice(1, -1))
-        } else {
-            operationId += capitalize(path)
-        }
+  for (const path of paths.split('/')) {
+    if (path.charCodeAt(0) === 123) {
+      operationId += `By${capitalize(path.slice(1, -1))}`;
+    } else {
+      operationId += capitalize(path);
     }
+  }
 
-    return operationId
-}
+  return operationId;
+};
 
 export const registerSchemaPath = ({
-    schema,
-    path,
-    method,
-    hook,
-    models
+  schema,
+  path,
+  method,
+  hook,
+  models,
 }: {
-    schema: Partial<OpenAPIV3.PathsObject>
-    contentType?: string | string[]
-    path: string
-    method: HTTPMethod
-    hook?: LocalHook<any, any>
-    models: Record<string, TSchema>
+  schema: Partial<OpenAPIV3.PathsObject>;
+  contentType?: string | string[];
+  path: string;
+  method: HTTPMethod;
+  hook?: LocalHook<any, any>;
+  models: Record<string, TSchema>;
 }) => {
-    if (hook) hook = deepClone(hook)
+  if (hook) hook = deepClone(hook);
 
-    const contentType = hook?.type ?? [
-        'application/json',
-        'multipart/form-data',
-        'text/plain'
-    ]
+  const contentType = hook?.type ?? [
+    // Default to only json
+    'application/json',
+  ];
 
-    path = toOpenAPIPath(path)
+  path = toOpenAPIPath(path);
 
-    const contentTypes =
-        typeof contentType === 'string'
-            ? [contentType]
-            : contentType ?? ['application/json']
+  const contentTypes =
+    typeof contentType === 'string'
+      ? [contentType]
+      : contentType ?? ['application/json'];
 
-    const bodySchema = hook?.body
-    const paramsSchema = hook?.params
-    const headerSchema = hook?.headers
-    const querySchema = hook?.query
-    let responseSchema = hook?.response as unknown as OpenAPIV3.ResponsesObject
+  const bodySchema = hook?.body;
+  const paramsSchema = hook?.params;
+  const headerSchema = hook?.headers;
+  const querySchema = hook?.query;
+  const userProvidedResponseSchema = hook?.response;
+  const responseSchema: OpenAPIV3.ResponsesObject = {};
 
-    if (typeof responseSchema === 'object') {
-        if (Kind in responseSchema) {
-            const { type, properties, required, additionalProperties, ...rest } =
-                responseSchema as typeof responseSchema & {
-                    type: string
-                    properties: Object
-                    required: string[]
-                }
+  /**
+   * Modified by @0xmarko.
+   * Added support for array response schemas.
+   * Set description to 'OK' if not provided.
+   *
+   * See:
+   * https://github.com/elysiajs/elysia-swagger/issues/8
+   * https://github.com/elysiajs/elysia-swagger/issues/39
+   * https://github.com/elysiajs/elysia-swagger/pull/20
+   */
+  const addToResponseSchema = (code: string, schema: TSchema | string) => {
+    if (typeof schema === 'string') {
+      if (!(schema in models)) return;
+      responseSchema[code] = {
+        description: 'OK',
+        content: mapTypesResponse(contentTypes, schema),
+      };
+    } else {
+      const ignore = ['Undefined', 'Null', 'Void'].includes(schema[Kind]);
+      const { description, ...rest } = schema;
+      responseSchema[code] = {
+        description: description ?? 'OK',
+        content: ignore ? undefined : mapTypesResponse(contentTypes, rest),
+      };
+    }
+  };
 
-            responseSchema = {
-                '200': {
-                    ...rest,
-                    description: rest.description as any,
-                    content: mapTypesResponse(
-                        contentTypes,
-                        type === 'object' || type === 'array'
-                            ? ({
-                                  type,
-                                  properties,
-                                  required
-                              } as any)
-                            : responseSchema
-                    )
-                }
-            }
-        } else {
-            Object.entries(responseSchema as Record<string, TSchema>).forEach(
-                ([key, value]) => {
-                    if (typeof value === 'string') {
-                        if(!models[value]) return
+  if (typeof userProvidedResponseSchema === 'object') {
+    if (Kind in userProvidedResponseSchema) {
+      addToResponseSchema('200', userProvidedResponseSchema);
+    } else {
+      for (const [code, value] of Object.entries(
+        userProvidedResponseSchema as Record<string, TSchema | string>,
+      )) {
+        addToResponseSchema(code, value);
+      }
+    }
+  } else if (typeof userProvidedResponseSchema === 'string') {
+    addToResponseSchema('200', userProvidedResponseSchema);
+  }
 
-                        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-                        const { type, properties, required, additionalProperties: _, ...rest } = models[
-                            value
-                        ] as TSchema & {
-                            type: string
-                            properties: Object
-                            required: string[]
-                        }
+  const parameters = [
+    ...mapProperties('header', headerSchema, models),
+    ...mapProperties('path', paramsSchema, models),
+    ...mapProperties('query', querySchema, models),
+  ];
 
-                        responseSchema[key] = {
-                            ...rest,
-                            description: rest.description as any,
-                            content: mapTypesResponse(contentTypes, value)
-                        }
-                    } else {
-                        const { type, properties, required, additionalProperties, ...rest } =
-                            value as typeof value & {
-                                type: string
-                                properties: Object
-                                required: string[]
-                            }
-
-                        responseSchema[key] = {
-                            ...rest,
-                            description: rest.description as any,
-                            content: mapTypesResponse(contentTypes, {
-                                type,
-                                properties,
-                                required
-                            })
-                        }
+  /**
+   * Modified by @0xmarko.
+   * Reordered the properties of the OpenAPI operation object to
+   * improve readability and consistency.
+   *
+   * New order: 'operationId', 'detail', 'parameters', 'requestBody', 'responses'.
+   */
+  schema[path] = {
+    ...(schema[path] ? schema[path] : {}),
+    [method.toLowerCase()]: {
+      operationId:
+        hook?.detail?.operationId ?? generateOperationId(method, path),
+      ...hook?.detail,
+      ...((headerSchema || paramsSchema || querySchema || bodySchema
+        ? ({ parameters } as any)
+        : {}) satisfies OpenAPIV3.ParameterObject),
+      ...(bodySchema
+        ? {
+            requestBody: {
+              content: mapTypesResponse(
+                contentTypes,
+                typeof bodySchema === 'string'
+                  ? {
+                      $ref: `#/components/schemas/${bodySchema}`,
                     }
-                }
-            )
-        }
-    } else if (typeof responseSchema === 'string') {
-        if(!(responseSchema in models)) return
-
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        const { type, properties, required, additionalProperties: _, ...rest } = models[
-            responseSchema
-        ] as TSchema & {
-            type: string
-            properties: Object
-            required: string[]
-        }
-
-        responseSchema = {
-            // @ts-ignore
-            '200': {
-                ...rest,
-                content: mapTypesResponse(contentTypes, responseSchema)
-            }
-        }
-    }
-
-    const parameters = [
-        ...mapProperties('header', headerSchema, models),
-        ...mapProperties('path', paramsSchema, models),
-        ...mapProperties('query', querySchema, models)
-    ]
-
-    schema[path] = {
-        ...(schema[path] ? schema[path] : {}),
-        [method.toLowerCase()]: {
-            ...((headerSchema || paramsSchema || querySchema || bodySchema
-                ? ({ parameters } as any)
-                : {}) satisfies OpenAPIV3.ParameterObject),
-            ...(responseSchema
-                ? {
-                      responses: responseSchema
-                  }
-                : {}),
-            operationId:
-                hook?.detail?.operationId ?? generateOperationId(method, path),
-            ...hook?.detail,
-            ...(bodySchema
-                ? {
-                      requestBody: {
-                          content: mapTypesResponse(
-                              contentTypes,
-                              typeof bodySchema === 'string'
-                                  ? {
-                                        $ref: `#/components/schemas/${bodySchema}`
-                                    }
-                                  : (bodySchema as any)
-                          )
-                      }
-                  }
-                : null)
-        } satisfies OpenAPIV3.OperationObject
-    }
-}
+                  : (bodySchema as any),
+              ),
+            },
+          }
+        : null),
+      ...(responseSchema
+        ? {
+            responses: responseSchema,
+          }
+        : {}),
+    } satisfies OpenAPIV3.OperationObject,
+  };
+};
 
 export const filterPaths = (
-    paths: Record<string, any>,
-    {
-        excludeStaticFile = true,
-        exclude = []
-    }: {
-        excludeStaticFile: boolean
-        exclude: (string | RegExp)[]
-    }
+  paths: Record<string, any>,
+  {
+    excludeStaticFile = true,
+    exclude = [],
+  }: {
+    excludeStaticFile: boolean;
+    exclude: (string | RegExp)[];
+  },
 ) => {
-    const newPaths: Record<string, any> = {}
+  const newPaths: Record<string, any> = {};
 
-    for (const [key, value] of Object.entries(paths))
-        if (
-            !exclude.some((x) => {
-                if (typeof x === 'string') return key === x
+  for (const [key, value] of Object.entries(paths))
+    if (
+      !exclude.some((x) => {
+        if (typeof x === 'string') return key === x;
 
-                return x.test(key)
-            }) &&
-            !key.includes('/swagger') &&
-            !key.includes('*') &&
-            (excludeStaticFile ? !key.includes('.') : true)
-        ) {
-            Object.keys(value).forEach((method) => {
-                const schema = value[method]
+        return x.test(key);
+      }) &&
+      !key.includes('/swagger') &&
+      !key.includes('*') &&
+      (excludeStaticFile ? !key.includes('.') : true)
+    ) {
+      for (const [method] of Object.entries(value)) {
+        const schema = value[method];
 
-                if (key.includes('{')) {
-                    if (!schema.parameters) schema.parameters = []
+        if (key.includes('{')) {
+          if (!schema.parameters) schema.parameters = [];
 
-                    schema.parameters = [
-                        ...key
-                            .split('/')
-                            .filter(
-                                (x) =>
-                                    x.startsWith('{') &&
-                                    !schema.parameters.find(
-                                        (params: Record<string, any>) =>
-                                            params.in === 'path' &&
-                                            params.name ===
-                                                x.slice(1, x.length - 1)
-                                    )
-                            )
-                            .map((x) => ({
-                                schema: { type: 'string' },
-                                in: 'path',
-                                name: x.slice(1, x.length - 1),
-                                required: true
-                            })),
-                        ...schema.parameters
-                    ]
-                }
-
-                if (!schema.responses)
-                    schema.responses = {
-                        200: {}
-                    }
-            })
-
-            newPaths[key] = value
+          schema.parameters = [
+            ...key
+              .split('/')
+              .filter(
+                (x) =>
+                  x.startsWith('{') &&
+                  !schema.parameters.find(
+                    (params: Record<string, any>) =>
+                      params.in === 'path' &&
+                      params.name === x.slice(1, x.length - 1),
+                  ),
+              )
+              .map((x) => ({
+                schema: { type: 'string' },
+                in: 'path',
+                name: x.slice(1, x.length - 1),
+                required: true,
+              })),
+            ...schema.parameters,
+          ];
         }
 
-    return newPaths
-}
+        if (!schema.responses)
+          schema.responses = {
+            200: {},
+          };
+      }
+
+      newPaths[key] = value;
+    }
+
+  return newPaths;
+};
