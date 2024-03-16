@@ -95,13 +95,16 @@ export const registerSchemaPath = ({
   contentType?: string | string[];
   path: string;
   method: HTTPMethod;
-  hook?: LocalHook<any, any>;
+  hook?: LocalHook<any, any, any, any, any, any, any>;
   models: Record<string, TSchema>;
 }) => {
   if (hook) hook = deepClone(hook);
 
   const contentType = hook?.type ?? [
-    // Default to only json
+    /**
+     * Modified by @0xmarko.
+     * Default to only json instead of also 'multipart/form-data' and 'text/plain'.
+     */
     'application/json',
   ];
 
